@@ -23,3 +23,7 @@ build/
 # Project logs
 logs/
 *.txt
+
+# Configuration with sensitive data
+.env
+config.json

