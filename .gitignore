@@ -20,3 +20,10 @@ dist/
 build/
 *.egg-info/
 
+# Project logs
+logs/
+*.txt
+
+# Configuration with sensitive data
+.env
+config.json
